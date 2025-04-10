@@ -70,14 +70,32 @@ function cleanExpiredCache() {
     }, CACHE_EXPIRATION_TIME / 2);
 }
 
-function statsDataHandle(memos, memoCount, tagCountMap) {
+function statsDataHandle(memos, memoCount, tagCountMap, photoCount) {
     memoCount += memos.length;
     memos.forEach(memo => {
         memo.tags.forEach(tag => {
             tagCountMap.set(tag, (tagCountMap.get(tag) || 0) + 1);
+
+            // 统计随手拍照片数量
+            if(tag == photoTag) {
+                memo.resources.forEach(item => {
+                    if(item.type.startsWith('image')) {
+                        photoCount++;
+                    }
+                });
+                memo.nodes.forEach(node => {
+                    if (node.type === 'PARAGRAPH') {
+                        node.paragraphNode.children.forEach(child => {
+                            if (child.type === 'IMAGE') {
+                                photoCount++;
+                            }
+                        });
+                    }
+                });
+            }
         });
     });
-    return { memoCount, tagCountMap };
+    return { memoCount, tagCountMap, photoCount };
 }
 
 // 从 URL 获取数据并更新缓存
@@ -85,15 +103,15 @@ async function updateCache(url) {
     try {
         let memoCount = 0;
         let tagCountMap = new Map();
+        let photoCount = 0;
         
-
         const response = await axios.get(url, { timeout: 5000 });
         const data = response.data;
         const urlObj = new URL(url);
         const pageSize = urlObj.searchParams.get('pageSize');
         const currentPageToken = urlObj.searchParams.get('pageToken') || 'init';
         
-        ({ memoCount, tagCountMap } = statsDataHandle(data.memos, memoCount, tagCountMap));
+        ({ memoCount, tagCountMap, photoCount } = statsDataHandle(data.memos, memoCount, tagCountMap, photoCount));
 
         // 如果 pageSize 不在已缓存列表中
         if (!cachedPageSizes.includes(pageSize)) {
@@ -127,7 +145,7 @@ async function updateCache(url) {
             }
             cache[pageSize][nextPageToken] = { ...nextData };   // 存入缓存
 
-            ({ memoCount, tagCountMap } = statsDataHandle(nextData.memos, memoCount, tagCountMap));
+            ({ memoCount, tagCountMap, photoCount } = statsDataHandle(nextData.memos, memoCount, tagCountMap, photoCount));
             
             nextPageToken = nextData.nextPageToken; // 更新 nextPageToken
         }
@@ -140,6 +158,7 @@ async function updateCache(url) {
             total: memoCount,
             tags: sortedTagObj,
             tagTotal: tagCountMap.size,
+            photoToal: photoCount,
             timestamp: Date.now()
         };
 
@@ -171,13 +190,12 @@ async function refreshCache() {
 app.get('/data', async (req, res) => {
     const { pageSize = 10, pageToken = 'init' } = req.query;
     
-    const targetUrl = `${baseUrl}?pageSize=${pageSize}${pageToken === "init" ? '' : `&pageToken=${pageToken}`}`;
-
     const pageSizeCache = cache[pageSize];
     const cachedData = pageSizeCache && (pageSizeCache[pageToken] || (pageToken == "" && pageSizeCache["init"]));
     if (cachedData) {
         res.json(cachedData);
     } else {
+        const targetUrl = `${baseUrl}?pageSize=${pageSize}${pageToken === "init" ? '' : `&pageToken=${pageToken}`}`;
         const newData = await updateCache(targetUrl);
 
         console.log(`pageSize:${pageSize} 缓存存储成功`);
@@ -213,7 +231,9 @@ app.get('/stats/:type', async (req, res) => {
     }
     else if (req.params.type == "total") {
         res.json({"total": memosStats.total,
-                "tagTotal": memosStats.tagTotal})
+                "tagTotal": memosStats.tagTotal,
+                "photoTotal": memosStats.photoTotal
+            })
     }
     else {
         res.json(memosStats);
