@@ -44,7 +44,8 @@ const cache = {};
 const cachedPageSizes = [];
 const MAX_CACHED_PAGE_SIZES = 3;
 const CACHE_EXPIRATION_TIME = 24 * 60 * 60 * 1000; // 缓存过期时间，单位：毫秒
-const memosStats = {};
+var memosStats = {};
+
 
 // 更新过期缓存
 function cleanExpiredCache() {
@@ -69,18 +70,30 @@ function cleanExpiredCache() {
     }, CACHE_EXPIRATION_TIME / 2);
 }
 
+function statsDataHandle(memos, memoCount, tagCountMap) {
+    memoCount += memos.length;
+    memos.forEach(memo => {
+        memo.tags.forEach(tag => {
+            tagCountMap.set(tag, (tagCountMap.get(tag) || 0) + 1);
+        });
+    });
+    return { memoCount, tagCountMap };
+}
+
 // 从 URL 获取数据并更新缓存
 async function updateCache(url) {
     try {
+        let memoCount = 0;
+        let tagCountMap = new Map();
         
+
         const response = await axios.get(url, { timeout: 5000 });
         const data = response.data;
         const urlObj = new URL(url);
         const pageSize = urlObj.searchParams.get('pageSize');
         const currentPageToken = urlObj.searchParams.get('pageToken') || 'init';
         
-        let memosCount = 0;
-        memosCount += data.memos.length;
+        ({ memoCount, tagCountMap } = statsDataHandle(data.memos, memoCount, tagCountMap));
 
         // 如果 pageSize 不在已缓存列表中
         if (!cachedPageSizes.includes(pageSize)) {
@@ -100,7 +113,6 @@ async function updateCache(url) {
         cache[pageSize][currentPageToken] = { ...data };
         cache[pageSize]["timestamp"] = Date.now();
         
-        // 使用循环替代递归
         let nextUrl = url;
         let nextPageToken = data.nextPageToken;
         while (nextPageToken) {
@@ -109,34 +121,50 @@ async function updateCache(url) {
             nextUrl = nextUrlObj.toString();
             const nextResponse = await axios.get(nextUrl, { timeout: 5000 });
             const nextData = nextResponse.data;
-            nextPageToken = nextData.nextPageToken;
-            const nextPageSize = nextUrlObj.searchParams.get('pageSize');
-            const nextCurrentPageToken = nextUrlObj.searchParams.get('pageToken');
-
-            memosCount += nextData.memos.length;
             
-            if (!cache[nextPageSize]) {
-                cache[nextPageSize] = {};
+            if (!cache[pageSize]) {
+                cache[pageSize] = {};
             }
-            cache[nextPageSize][nextCurrentPageToken] = { ...nextData };
+            cache[pageSize][nextPageToken] = { ...nextData };   // 存入缓存
+
+            ({ memoCount, tagCountMap } = statsDataHandle(nextData.memos, memoCount, tagCountMap));
+            
+            nextPageToken = nextData.nextPageToken; // 更新 nextPageToken
         }
 
-        memosStats["total"] = memosCount;
+        const tagObj = Object.fromEntries(tagCountMap);
+        const sortedTags = Object.entries(tagObj).sort((a, b) => b[1] - a[1]);
+        const sortedTagObj = Object.fromEntries(sortedTags);
+
+        memosStats = {
+            total: memoCount,
+            tags: sortedTagObj,
+            tagTotal: tagCountMap.size,
+            timestamp: Date.now()
+        };
 
         return data;
     } catch (error) {
-        console.error('获取数据时出错:', error);
+        console.error('获取数据时出错:', error.message);
         return null;
     }
 }
 
+
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // 刷新全部缓存
 async function refreshCache() {
-    Object.keys(cache).forEach(pageSize => {
+    for (const pageSize in cache) {
+        console.log(pageSize)
         delete cache[pageSize];
         const updateUrl = `${baseUrl}?pageSize=${pageSize}`;
-        updateCache(updateUrl);
-    });
+        await updateCache(updateUrl);
+        console.log("刷新成功")
+        await delay(2000);
+    }
 }
 
 // 获取缓存数据的 API 端点
@@ -169,7 +197,7 @@ app.get('/refresh', async (req, res) => {
 });
 
 app.post('/updates', async (req, res) => {
-    const { update } = req.body;
+    const { update } = req.query;
     if (update === 'true') {
         refreshCache();
         console.log("/updates 刷新缓存")
@@ -179,14 +207,30 @@ app.post('/updates', async (req, res) => {
     }
 });
 
-app.get('/total', async (req, res) => {
-    res.json(memosStats);
+app.get('/stats/:type', async (req, res) => {
+    if(req.params.type == "tags") {
+        res.json(memosStats.tags);
+    }
+    else if (req.params.type == "total") {
+        res.json({"total": memosStats.total,
+                "tagTotal": memosStats.tagTotal})
+    }
+    else {
+        res.json(memosStats);
+    }
 });
+
+async function preloadPage() {  // 预加载
+    const preloadPageSizes = [10, 15, 20];
+    for (const pageSize of preloadPageSizes) {
+        await updateCache(`${baseUrl}?pageSize=${pageSize}`);
+        await delay(2000); 
+    }
+}
 
 const port = 3000;
 app.listen(port, () => {
     console.log(`服务器运行在端口 ${port}`);
-
-    updateCache(`${baseUrl}?pageSize=20`); 
+    preloadPage();
     cleanExpiredCache();
 });
