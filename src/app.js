@@ -41,6 +41,8 @@ app.use(cors(corsOptions));
 
 // 初始化缓存
 const cache = {};
+const tagCache = {};
+const tagNameList = [];
 const cachedPageSizes = [];
 const MAX_CACHED_PAGE_SIZES = 3;
 const CACHE_EXPIRATION_TIME = 24 * 60 * 60 * 1000; // 缓存过期时间，单位：毫秒
@@ -158,7 +160,7 @@ async function updateCache(url) {
             total: memoCount,
             tags: sortedTagObj,
             tagTotal: tagCountMap.size,
-            photoToal: photoCount,
+            photoTotal: photoCount,
             timestamp: Date.now()
         };
 
@@ -183,6 +185,36 @@ async function refreshCache() {
         await updateCache(updateUrl);
         console.log("刷新成功")
         await delay(2000);
+    }
+
+    for (const tagName in tagCache) {
+        delete tagCache[tagName];
+        await updateTagCache(tagName);
+        await delay(1000);
+    }
+}
+
+async function updateTagCache(tagName) {
+    try {
+        const targetUrl = `${baseUrl}?filter=tag in ["${tagName}"]&pageSize=20`
+        const response = await axios.get(targetUrl, { timeout: 5000 });
+
+        const data = response.data;
+
+        if (!tagNameList.includes(tagName)) {
+            if (tagNameList.length >= MAX_CACHED_PAGE_SIZES) {
+                const oldestTag = tagNameList.shift();
+                console.log("超过最大缓存数量，删除旧缓存的 tagCache[tag: %s]", oldestTag);
+                delete tagCache[oldestTag];
+                console.log(tagNameList)
+            }
+            tagNameList.push(tagName);
+        }
+        tagCache[tagName] = { ...data };
+        return data;
+    } catch (error) {
+        console.error('获取数据时出错:', error.message);
+        return null;
     }
 }
 
@@ -234,23 +266,53 @@ app.get('/stats/:type', async (req, res) => {
                 "tagTotal": memosStats.tagTotal,
                 "photoTotal": memosStats.photoTotal
             })
+            console.log(memosStats)
     }
     else {
         res.json(memosStats);
     }
 });
 
-async function preloadPage() {  // 预加载
+// 根据标签获取
+app.get('/tag', async (req, res) => {
+    const { tagName } = req.query;
+    if (tagName && tagName.trim()!== '') {
+        const tagNameCache = tagCache[tagName];
+        if(tagNameCache) {
+            res.json(tagNameCache);
+        }
+        else {
+            try {
+                const newData = await updateTagCache(tagName);
+                res.json(newData);
+            } catch (error) {
+                console.error(error);
+                res.status(500).json({ message: '服务器内部错误' });
+            }
+        }
+    } else {
+        res.status(400).json({ message: '参数错误' });
+    }
+});
+
+
+async function preload() {  // 预加载
     const preloadPageSizes = [10, 15, 20];
     for (const pageSize of preloadPageSizes) {
         await updateCache(`${baseUrl}?pageSize=${pageSize}`);
         await delay(2000); 
+    }
+
+    const preloadTagName = ["记录/电影"];
+    for (const tag of preloadTagName) {
+        await updateTagCache(tag);
+        await delay(1000); 
     }
 }
 
 const port = 3000;
 app.listen(port, () => {
     console.log(`服务器运行在端口 ${port}`);
-    preloadPage();
+    preload();
     cleanExpiredCache();
 });
