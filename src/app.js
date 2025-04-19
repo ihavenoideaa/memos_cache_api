@@ -2,6 +2,12 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 
+const { 
+    statsDataHandle,
+    delay
+} = require('./function');
+
+
 const app = express();
 const baseUrl = 'https://127.0.0.1:<memos_server_port>/api/v1/memos'; 
 
@@ -49,16 +55,9 @@ const userNameList = [];
 const MAX_CACHED_PAGE_SIZES = 3;
 const MAX_USER_CACHE = 5;
 const CACHE_EXPIRATION_TIME = 24 * 60 * 60 * 1000; // 缓存过期时间，单位：毫秒
-var memosStats = {};
-const timeStats = {"timeList":[]};
+var memosStats;
 let isHandleStats = false;
-let incompleteTasksCount = 0;
-let taskMemosCount = 0;
-let codeMemosCount = 0;
-let linkMemosCount = 0;
-let memoCount = 0;
-let tagCountMap = new Map();
-let photoCount = 0;
+
 
 
 // 更新过期缓存
@@ -84,46 +83,6 @@ function cleanExpiredCache() {
     }, CACHE_EXPIRATION_TIME / 2);
 }
 
-function statsDataHandle(memos) {
-    if(isHandleStats) {
-        console.log("重复")
-        return;   // 已经处理过了
-    }
-
-    memoCount += memos.length;
-    memos.forEach(memo => {
-        memo.tags.forEach(tag => {
-            tagCountMap.set(tag, (tagCountMap.get(tag) || 0) + 1);
-
-            // 统计随手拍照片数量
-            if(tag == photoTag) {
-                memo.resources.forEach(item => {
-                    if(item.type.startsWith('image')) {
-                        photoCount++;
-                    }
-                });
-                memo.nodes.forEach(node => {
-                    if (node.type === 'PARAGRAPH') {
-                        node.paragraphNode.children.forEach(child => {
-                            if (child.type === 'IMAGE') {
-                                photoCount++;
-                            }
-                        });
-                    }
-                });
-            }
-        });
-
-        // 统计时间数据
-        timeStats["timeList"].push(memo.createTime)
-        // 统计类型数据
-        incompleteTasksCount += memo.property.hasIncompleteTasks === true ? 1 : 0;
-        taskMemosCount += memo.property.hasTaskList === true ? 1 : 0;
-        codeMemosCount += memo.property.hasCode === true ? 1 : 0;
-        linkMemosCount += memo.property.hasLink === true ? 1 : 0;
-    });
-    return;
-}
 
 // 从 URL 获取数据并更新缓存
 async function updateCache(url) {
@@ -134,8 +93,9 @@ async function updateCache(url) {
         const pageSize = urlObj.searchParams.get('pageSize');
         const currentPageToken = urlObj.searchParams.get('pageToken') || 'init';
         
-        statsDataHandle(data.memos);
-
+        let tmpStats = {};
+        tmpStats = statsDataHandle(data.memos, tmpStats, isHandleStats, true);
+        
         // 如果 pageSize 不在已缓存列表中
         if (!cachedPageSizes.includes(pageSize)) {
             // 若超过最大缓存数量，删除最旧的 pageSize 对应的缓存
@@ -168,37 +128,15 @@ async function updateCache(url) {
             }
             cache[pageSize][nextPageToken] = { ...nextData };   // 存入缓存
 
-            statsDataHandle(nextData.memos);
+            tmpStats = statsDataHandle(nextData.memos, tmpStats, isHandleStats);
             
             nextPageToken = nextData.nextPageToken; // 更新 nextPageToken
         }
 
-        const tagObj = Object.fromEntries(tagCountMap);
-        const sortedTags = Object.entries(tagObj).sort((a, b) => b[1] - a[1]);
-        const sortedTagObj = Object.fromEntries(sortedTags);
 
         if(!isHandleStats) {
             isHandleStats = true;   // 处理完成，不重复处理
-            memosStats = {
-                total: memoCount,
-                tags: sortedTagObj,
-                tagTotal: tagCountMap.size,
-                photoTotal: photoCount,
-                incompleteTask : incompleteTasksCount,
-                taskTotal : taskMemosCount,
-                codeTotal : codeMemosCount,
-                linkTotal : linkMemosCount,
-                timestamp: Date.now()
-            };
-            delete tagCountMap;
-            tagCountMap = new Map();
-            memoCount = 0;
-            photoCount = 0;
-            incompleteTasksCount = 0;
-            taskMemosCount = 0;
-            codeMemosCount = 0;
-            linkMemosCount = 0;
-            console.log(memosStats)
+            memosStats = tmpStats;
         }
 
         return data;
@@ -206,11 +144,6 @@ async function updateCache(url) {
         console.error(`获取Memos:${url}数据时出错:`, error.message);
         return null;
     }
-}
-
-
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // 刷新全部缓存
@@ -330,7 +263,6 @@ app.get('/stats/:type', async (req, res) => {
                 "tagTotal": memosStats.tagTotal,
                 "photoTotal": memosStats.photoTotal
             })
-            console.log(memosStats)
     }
     else if (req.params.type == "timeData") {
         res.json(timeStats)
