@@ -48,16 +48,14 @@ app.use(cors(corsOptions));
 // 初始化缓存
 const cache = {};
 const cachedPageSizes = [];
-const tagCache = {};
-const tagNameList = [];
 const userCache = {};
 const userNameList = [];
 const MAX_CACHED_PAGE_SIZES = 3;
 const MAX_USER_CACHE = 5;
 const CACHE_EXPIRATION_TIME = 24 * 60 * 60 * 1000; // 缓存过期时间，单位：毫秒
-var memosStats;
+var tagCache = {};
+var statsCache = {};
 let isHandleStats = false;
-
 
 
 // 更新过期缓存
@@ -94,7 +92,8 @@ async function updateCache(url) {
         const currentPageToken = urlObj.searchParams.get('pageToken') || 'init';
         
         let tmpStats = {};
-        tmpStats = statsDataHandle(data.memos, tmpStats, isHandleStats, true);
+        let tmpTags = {}
+        statsDataHandle(data.memos, tmpStats, tmpTags, isHandleStats, 1);
         
         // 如果 pageSize 不在已缓存列表中
         if (!cachedPageSizes.includes(pageSize)) {
@@ -120,7 +119,7 @@ async function updateCache(url) {
             const nextUrlObj = new URL(nextUrl);
             nextUrlObj.searchParams.set('pageToken', nextPageToken);
             nextUrl = nextUrlObj.toString();
-            const nextResponse = await axios.get(nextUrl, { timeout: 5000 });
+            const nextResponse = await axios.get(nextUrl, { timeout: 8000 });
             const nextData = nextResponse.data;
             
             if (!cache[pageSize]) {
@@ -128,15 +127,16 @@ async function updateCache(url) {
             }
             cache[pageSize][nextPageToken] = { ...nextData };   // 存入缓存
 
-            tmpStats = statsDataHandle(nextData.memos, tmpStats, isHandleStats);
-            
             nextPageToken = nextData.nextPageToken; // 更新 nextPageToken
+
+            statsDataHandle(nextData.memos, tmpStats, tmpTags, isHandleStats, nextPageToken ? 2 : 3);
         }
 
 
         if(!isHandleStats) {
             isHandleStats = true;   // 处理完成，不重复处理
-            memosStats = tmpStats;
+            statsCache = tmpStats;
+            tagCache = tmpTags;
         }
 
         return data;
@@ -158,11 +158,6 @@ async function refreshCache() {
         await delay(2000);
     }
 
-    for (const tagName in tagCache) {
-        delete tagCache[tagName];
-        await updateTagCache(tagName);
-        await delay(1000);
-    }
     for (const user in userCache) {
         delete userCache[user];
         await updateUserCache();
@@ -170,28 +165,7 @@ async function refreshCache() {
     }
 }
 
-async function updateTagCache(tagName) {
-    try {
-        const targetUrl = `${baseUrl}?filter=tag in ["${tagName}"]&pageSize=20`
-        const response = await axios.get(targetUrl, { timeout: 5000 });
 
-        const data = response.data;
-
-        if (!tagNameList.includes(tagName)) {
-            if (tagNameList.length >= MAX_CACHED_PAGE_SIZES) {
-                const oldestTag = tagNameList.shift();
-                console.log("超过最大缓存数量，删除旧缓存的 tagCache[tag: %s]", oldestTag);
-                delete tagCache[oldestTag];
-            }
-            tagNameList.push(tagName);
-        }
-        tagCache[tagName] = { ...data };
-        return data;
-    } catch (error) {
-        console.error(`获取Tags:${tagName}数据时出错:`, error.message);
-        return null;
-    }
-}
 
 async function updateUserCache(username) {
     try {
@@ -200,9 +174,9 @@ async function updateUserCache(username) {
         const data = response.data;
         if (!userNameList.includes(username)) {
             if (userNameList.length >= MAX_USER_CACHE) {
-                const oldestTag = userNameList.shift();
-                console.log("超过最大缓存数量，删除旧缓存的 tagCache[tag: %s]", oldestTag);
-                delete tagCache[oldestTag];
+                const oldestName = userNameList.shift();
+                console.log("超过最大缓存数量，删除旧缓存的 userCache[username: %s]", oldestName);
+                delete userCache[oldestName];
             }
             userNameList.push(username);
         }
@@ -256,19 +230,19 @@ app.post('/updates', async (req, res) => {
 
 app.get('/stats/:type', async (req, res) => {
     if(req.params.type == "tags") {
-        res.json(memosStats.tags);
+        res.json(statsCache.tags);
     }
     else if (req.params.type == "total") {
-        res.json({"total": memosStats.total,
-                "tagTotal": memosStats.tagTotal,
-                "photoTotal": memosStats.photoTotal
+        res.json({"total": statsCache.total,
+                "tagTotal": statsCache.tagTotal,
+                "photoTotal": statsCache.photoTotal
             })
     }
     else if (req.params.type == "timeData") {
-        res.json(timeStats)
+        res.json(statsCache.timeStats)
     }
     else {
-        res.json(memosStats);
+        res.json(statsCache);
     }
 });
 
@@ -281,13 +255,7 @@ app.get('/tag', async (req, res) => {
             res.json(tagNameCache);
         }
         else {
-            try {
-                const newData = await updateTagCache(tagName);
-                res.json(newData);
-            } catch (error) {
-                console.error(error);
-                res.status(500).json({ message: '服务器内部错误' });
-            }
+            res.status(404).json({ message: '未找到该标签' });  
         }
     } else {
         res.status(400).json({ message: '参数错误' });
@@ -316,12 +284,6 @@ async function preload() {  // 预加载
     for (const pageSize of preloadPageSizes) {
         await updateCache(`${baseUrl}?pageSize=${pageSize}`);
         await delay(2000); 
-    }
-
-    const preloadTagName = ["记录/电影"];
-    for (const tag of preloadTagName) {
-        await updateTagCache(tag);
-        await delay(1000); 
     }
 
     const preloadUserName = ["users/1"];

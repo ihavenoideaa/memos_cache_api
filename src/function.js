@@ -1,39 +1,48 @@
 const photoTag = '随手拍';
 
-function statsDataHandle(memos, tmpStats, isHandleStats, isFirst = false) {
+function statsDataHandle(memos, tmpStats, tmpTags, isHandleStats, status = 2) {
     if(isHandleStats) {
         return {};   // 已经处理过了
     }
-    if (isFirst) {  // 初始化
-        tmpStats = {
-            memoCount: 0,
-            tagCountMap: new Map(),
-            photoCount: 0,
-            timeStats: {"timeList":[]},
-            incompleteTasksCount: 0,
-            taskMemosCount: 0,
-            codeMemosCount: 0,
-            linkMemosCount: 0
-        };
+    if (status == 1) {  // 初始化
+        tmpStats["total"] = 0;
+        tmpStats["tags"] = new Map();
+        tmpStats["tagTotal"] = 0;
+        tmpStats["linkTotal"] = 0;
+        tmpStats["photoTotal"] = 0;
+        tmpStats["timeStats"] = {"timeList":[]};
+        tmpStats["codeTotal"] = 0;
+        tmpStats["taskTotal"] = 0;
+        tmpStats["incompleteTaskTotal"] = 0;
+
+        tmpTags["isCode"] = {"memos":[]};
+        tmpTags["isLink"] = {"memos":[]};
+        tmpTags["isTask"] = {"memos":[]};
+        tmpTags["isIncompleteTask"] = {"memos":[]};        
     }
 
-    tmpStats.memoCount += memos.length;
+    tmpStats.total += memos.length;
     memos.forEach(memo => {
         memo.tags.forEach(tag => {
-            tmpStats.tagCountMap.set(tag, (tmpStats.tagCountMap.get(tag) || 0) + 1);
+            tmpStats.tags.set(tag, (tmpStats.tags.get(tag) || 0) + 1);
+            // 统计标签数据
+            if(!tmpTags[tag]) {
+                tmpTags[tag] = {"memos":[]};
+            }
+            tmpTags[tag].memos.push(memo);
 
             // 统计随手拍照片数量
             if(tag == photoTag) {
                 memo.resources.forEach(item => {
                     if(item.type.startsWith('image')) {
-                        tmpStats.photoCount++;
+                        tmpStats.photoTotal++;
                     }
                 });
                 memo.nodes.forEach(node => {
                     if (node.type === 'PARAGRAPH') {
                         node.paragraphNode.children.forEach(child => {
                             if (child.type === 'IMAGE') {
-                                tmpStats.photoCount++;
+                                tmpStats.photoTotal++;
                             }
                         });
                     }
@@ -42,17 +51,34 @@ function statsDataHandle(memos, tmpStats, isHandleStats, isFirst = false) {
         });
 
         // 统计时间数据
-        tmpStats.timeStats["timeList"].push(memo.createTime)
+        tmpStats.timeStats.timeList.unshift(memo.createTime)
         // 统计类型数据
-        tmpStats.incompleteTasksCount += memo.property.hasIncompleteTasks === true ? 1 : 0;
-        tmpStats.taskMemosCount += memo.property.hasTaskList === true ? 1 : 0;
-        tmpStats.codeMemosCount += memo.property.hasCode === true ? 1 : 0;
-        tmpStats.linkMemosCount += memo.property.hasLink === true ? 1 : 0;
+        if(memo.property.hasCode === true) {
+            tmpStats.codeTotal += 1;
+            tmpTags.isCode.memos.push(memo);
+        }
+        if(memo.property.hasLink === true) {
+            tmpStats.linkTotal += 1;
+            tmpTags.isLink.memos.push(memo);
+        }
+        if(memo.property.hasTaskList === true) {
+            tmpStats.taskTotal += 1;
+            tmpTags.isTask.memos.push(memo);
+        }
+        if(memo.property.hasIncompleteTasks === true) {
+            tmpStats.incompleteTaskTotal += 1;
+            tmpTags.isIncompleteTask.memos.push(memo);
+        }
     });
 
-    const sortedEntries = [...tmpStats.tagCountMap.entries()].sort((a, b) => b[1] - a[1]);
-    tmpStats.tagCountMap = new Map(sortedEntries);
+    const sortedEntries = [...tmpStats.tags.entries()].sort((a, b) => b[1] - a[1]);
+    tmpStats.tags = new Map(sortedEntries);
+    if(status == 3) {   // 最后一次处理
+        tmpStats.tagTotal = tmpStats.tags.size;
+        delete tmpStats.tags;
+        tmpStats.tags = Object.fromEntries(sortedEntries);
 
+    }
     return tmpStats;
 }
 
